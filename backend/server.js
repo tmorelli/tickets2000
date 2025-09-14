@@ -467,6 +467,227 @@ app.put('/api/admin/users/:userId/admin', authenticateToken, requireAdmin, (req,
   );
 });
 
+// Social Features Routes
+
+// Search users
+app.get('/api/users/search', authenticateToken, (req, res) => {
+  const { query } = req.query;
+  const currentUserId = req.user.userId;
+
+  if (!query || query.trim().length < 2) {
+    return res.status(400).json({ message: 'Search query must be at least 2 characters' });
+  }
+
+  const searchQuery = `
+    SELECT id, email, firstName, lastName
+    FROM users
+    WHERE (firstName LIKE ? OR lastName LIKE ? OR email LIKE ?)
+    AND id != ?
+    ORDER BY firstName, lastName
+    LIMIT 20
+  `;
+
+  const searchTerm = `%${query.trim()}%`;
+
+  db.all(searchQuery, [searchTerm, searchTerm, searchTerm, currentUserId], (err, users) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error searching users' });
+    }
+    res.json(users);
+  });
+});
+
+// Send friend request
+app.post('/api/friends/request', authenticateToken, (req, res) => {
+  const { recipientId } = req.body;
+  const requesterId = req.user.userId;
+
+  if (requesterId === recipientId) {
+    return res.status(400).json({ message: 'Cannot send friend request to yourself' });
+  }
+
+  // Check if request already exists
+  db.get(
+    'SELECT id FROM friends WHERE (requesterId = ? AND recipientId = ?) OR (requesterId = ? AND recipientId = ?)',
+    [requesterId, recipientId, recipientId, requesterId],
+    (err, existingRequest) => {
+      if (err) {
+        return res.status(500).json({ message: 'Error checking existing requests' });
+      }
+
+      if (existingRequest) {
+        return res.status(409).json({ message: 'Friend request already exists' });
+      }
+
+      const friendRequestId = uuidv4();
+
+      db.run(
+        'INSERT INTO friends (id, requesterId, recipientId, status) VALUES (?, ?, ?, ?)',
+        [friendRequestId, requesterId, recipientId, 'pending'],
+        function(err) {
+          if (err) {
+            return res.status(500).json({ message: 'Error sending friend request' });
+          }
+
+          res.status(201).json({
+            id: friendRequestId,
+            message: 'Friend request sent successfully'
+          });
+        }
+      );
+    }
+  );
+});
+
+// Get pending friend requests (received)
+app.get('/api/friends/requests', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT f.id, f.requesterId, f.createdAt,
+           u.firstName, u.lastName, u.email
+    FROM friends f
+    JOIN users u ON f.requesterId = u.id
+    WHERE f.recipientId = ? AND f.status = 'pending'
+    ORDER BY f.createdAt DESC
+  `;
+
+  db.all(query, [userId], (err, requests) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error fetching friend requests' });
+    }
+    res.json(requests);
+  });
+});
+
+// Respond to friend request
+app.put('/api/friends/request/:requestId', authenticateToken, (req, res) => {
+  const { requestId } = req.params;
+  const { action } = req.body; // 'accept' or 'decline'
+  const userId = req.user.userId;
+
+  if (!['accept', 'decline'].includes(action)) {
+    return res.status(400).json({ message: 'Invalid action' });
+  }
+
+  const status = action === 'accept' ? 'accepted' : 'declined';
+
+  db.run(
+    'UPDATE friends SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? AND recipientId = ? AND status = "pending"',
+    [status, requestId, userId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error updating friend request' });
+      }
+
+      if (this.changes === 0) {
+        return res.status(404).json({ message: 'Friend request not found' });
+      }
+
+      res.json({ message: `Friend request ${action}ed successfully` });
+    }
+  );
+});
+
+// Get friends list with their events
+app.get('/api/friends', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT DISTINCT
+      CASE
+        WHEN f.requesterId = ? THEN f.recipientId
+        ELSE f.requesterId
+      END as friendId,
+      CASE
+        WHEN f.requesterId = ? THEN ru.firstName
+        ELSE su.firstName
+      END as firstName,
+      CASE
+        WHEN f.requesterId = ? THEN ru.lastName
+        ELSE su.lastName
+      END as lastName,
+      CASE
+        WHEN f.requesterId = ? THEN ru.email
+        ELSE su.email
+      END as email
+    FROM friends f
+    LEFT JOIN users su ON f.requesterId = su.id
+    LEFT JOIN users ru ON f.recipientId = ru.id
+    WHERE (f.requesterId = ? OR f.recipientId = ?)
+    AND f.status = 'accepted'
+    ORDER BY firstName, lastName
+  `;
+
+  db.all(query, [userId, userId, userId, userId, userId, userId], (err, friends) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error fetching friends' });
+    }
+
+    // Get events for each friend
+    const friendsWithEvents = [];
+    let processed = 0;
+
+    if (friends.length === 0) {
+      return res.json([]);
+    }
+
+    friends.forEach(friend => {
+      const eventQuery = `
+        SELECT
+          e.id, e.title, e.date, e.imageUrl,
+          v.name as venueName,
+          s.section, s.row, s.number as seatNumber,
+          p.purchaseDate
+        FROM purchases p
+        JOIN events e ON p.eventId = e.id
+        JOIN venues v ON e.venueId = v.id
+        JOIN seats s ON p.seatId = s.id
+        WHERE p.userId = ?
+        ORDER BY e.date ASC
+      `;
+
+      db.all(eventQuery, [friend.friendId], (err, events) => {
+        processed++;
+
+        if (!err) {
+          friend.events = events;
+        } else {
+          friend.events = [];
+        }
+
+        friendsWithEvents.push(friend);
+
+        if (processed === friends.length) {
+          res.json(friendsWithEvents);
+        }
+      });
+    });
+  });
+});
+
+// Remove friend
+app.delete('/api/friends/:friendId', authenticateToken, (req, res) => {
+  const { friendId } = req.params;
+  const userId = req.user.userId;
+
+  db.run(
+    'DELETE FROM friends WHERE ((requesterId = ? AND recipientId = ?) OR (requesterId = ? AND recipientId = ?)) AND status = "accepted"',
+    [userId, friendId, friendId, userId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error removing friend' });
+      }
+
+      if (this.changes === 0) {
+        return res.status(404).json({ message: 'Friend relationship not found' });
+      }
+
+      res.json({ message: 'Friend removed successfully' });
+    }
+  );
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

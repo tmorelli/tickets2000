@@ -9,6 +9,7 @@ import SeatMap from './components/SeatMap';
 import PurchaseHistory from './components/PurchaseHistory';
 import AdminUsers from './components/AdminUsers';
 import AdminEvents from './components/AdminEvents';
+import Friends from './components/Friends';
 import './App.css';
 
 const ProtectedRoute = ({ children }) => {
@@ -95,6 +96,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <PurchaseHistory />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/friends"
+                element={
+                  <ProtectedRoute>
+                    <Friends />
                   </ProtectedRoute>
                 }
               />
