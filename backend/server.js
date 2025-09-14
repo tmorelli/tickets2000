@@ -190,7 +190,9 @@ app.get('/api/venues', (req, res) => {
 });
 
 // Events Routes
-app.get('/api/events', (req, res) => {
+app.get('/api/events', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
   const query = `
     SELECT e.*, v.name as venueName, v.address as venueAddress
     FROM events e
@@ -203,7 +205,79 @@ app.get('/api/events', (req, res) => {
     if (err) {
       return res.status(500).json({ message: 'Error fetching events' });
     }
-    res.json(events);
+
+    // For each event, get social information
+    const eventsWithSocialInfo = [];
+    let processed = 0;
+
+    if (events.length === 0) {
+      return res.json([]);
+    }
+
+    events.forEach(event => {
+      // Check if current user is attending
+      db.get(
+        'SELECT id FROM purchases WHERE userId = ? AND eventId = ?',
+        [userId, event.id],
+        (err, userPurchase) => {
+          event.isUserAttending = !!userPurchase;
+
+          // Get friends attending this event (grouped by friend to show all their seats)
+          const friendsQuery = `
+            SELECT
+              friendId,
+              firstName,
+              lastName,
+              GROUP_CONCAT(section || ' ' || row || '-' || seatNumber, ', ') as seats
+            FROM (
+              SELECT DISTINCT
+                CASE
+                  WHEN f.requesterId = ? THEN f.recipientId
+                  ELSE f.requesterId
+                END as friendId,
+                CASE
+                  WHEN f.requesterId = ? THEN ru.firstName
+                  ELSE su.firstName
+                END as firstName,
+                CASE
+                  WHEN f.requesterId = ? THEN ru.lastName
+                  ELSE su.lastName
+                END as lastName,
+                s.section, s.row, s.number as seatNumber
+              FROM friends f
+              LEFT JOIN users su ON f.requesterId = su.id
+              LEFT JOIN users ru ON f.recipientId = ru.id
+              JOIN purchases p ON (
+                (f.requesterId = ? AND p.userId = f.recipientId) OR
+                (f.recipientId = ? AND p.userId = f.requesterId)
+              )
+              JOIN seats s ON p.seatId = s.id
+              WHERE (f.requesterId = ? OR f.recipientId = ?)
+              AND f.status = 'accepted'
+              AND p.eventId = ?
+              ORDER BY s.section, s.row, s.number
+            )
+            GROUP BY friendId, firstName, lastName
+          `;
+
+          db.all(friendsQuery, [userId, userId, userId, userId, userId, userId, userId, event.id], (err, friends) => {
+            processed++;
+
+            if (!err) {
+              event.friendsAttending = friends;
+            } else {
+              event.friendsAttending = [];
+            }
+
+            eventsWithSocialInfo.push(event);
+
+            if (processed === events.length) {
+              res.json(eventsWithSocialInfo);
+            }
+          });
+        }
+      );
+    });
   });
 });
 
