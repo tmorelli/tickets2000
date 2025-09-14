@@ -7,6 +7,8 @@ import Register from './components/Register';
 import EventsList from './components/EventsList';
 import SeatMap from './components/SeatMap';
 import PurchaseHistory from './components/PurchaseHistory';
+import AdminUsers from './components/AdminUsers';
+import AdminEvents from './components/AdminEvents';
 import './App.css';
 
 const ProtectedRoute = ({ children }) => {
@@ -27,6 +29,24 @@ const PublicRoute = ({ children }) => {
   }
 
   return currentUser ? <Navigate to="/events" /> : children;
+};
+
+const AdminRoute = ({ children }) => {
+  const { currentUser, isAdmin, loading } = useAuth();
+
+  if (loading) {
+    return <div>Loading...</div>;
+  }
+
+  if (!currentUser) {
+    return <Navigate to="/login" />;
+  }
+
+  if (!isAdmin) {
+    return <Navigate to="/events" />;
+  }
+
+  return children;
 };
 
 function App() {
@@ -76,6 +96,22 @@ function App() {
                   <ProtectedRoute>
                     <PurchaseHistory />
                   </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin/users"
+                element={
+                  <AdminRoute>
+                    <AdminUsers />
+                  </AdminRoute>
+                }
+              />
+              <Route
+                path="/admin/events"
+                element={
+                  <AdminRoute>
+                    <AdminEvents />
+                  </AdminRoute>
                 }
               />
             </Routes>

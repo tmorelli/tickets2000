@@ -88,7 +88,8 @@ export const AuthProvider = ({ children }) => {
     login,
     register,
     logout,
-    loading
+    loading,
+    isAdmin: currentUser?.isAdmin || false
   };
 
   return (

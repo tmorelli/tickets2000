@@ -23,6 +23,7 @@ db.serialize(() => {
     password TEXT NOT NULL,
     firstName TEXT NOT NULL,
     lastName TEXT NOT NULL,
+    isAdmin BOOLEAN DEFAULT FALSE,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
@@ -91,6 +92,14 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Middleware to verify admin access
+const requireAdmin = (req, res, next) => {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+  next();
+};
+
 // Auth Routes
 app.post('/api/register', async (req, res) => {
   try {
@@ -102,10 +111,11 @@ app.post('/api/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = uuidv4();
+    const isAdmin = email === 'tony@tonymorelli.com';
 
     db.run(
-      'INSERT INTO users (id, email, password, firstName, lastName) VALUES (?, ?, ?, ?, ?)',
-      [userId, email, hashedPassword, firstName, lastName],
+      'INSERT INTO users (id, email, password, firstName, lastName, isAdmin) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, email, hashedPassword, firstName, lastName, isAdmin],
       function(err) {
         if (err) {
           if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -114,10 +124,10 @@ app.post('/api/register', async (req, res) => {
           return res.status(500).json({ message: 'Error creating user' });
         }
 
-        const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ userId, email, isAdmin }, JWT_SECRET, { expiresIn: '24h' });
         res.status(201).json({
           token,
-          user: { id: userId, email, firstName, lastName }
+          user: { id: userId, email, firstName, lastName, isAdmin }
         });
       }
     );
@@ -151,14 +161,15 @@ app.post('/api/login', (req, res) => {
           return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ userId: user.id, email: user.email, isAdmin: user.isAdmin }, JWT_SECRET, { expiresIn: '24h' });
         res.json({
           token,
           user: {
             id: user.id,
             email: user.email,
             firstName: user.firstName,
-            lastName: user.lastName
+            lastName: user.lastName,
+            isAdmin: user.isAdmin
           }
         });
       }
@@ -329,6 +340,40 @@ app.get('/api/purchases', authenticateToken, (req, res) => {
     }
     res.json(purchases);
   });
+});
+
+// Admin Routes
+app.get('/api/admin/users', authenticateToken, requireAdmin, (req, res) => {
+  db.all(
+    'SELECT id, email, firstName, lastName, isAdmin, createdAt FROM users ORDER BY createdAt DESC',
+    (err, users) => {
+      if (err) {
+        return res.status(500).json({ message: 'Error fetching users' });
+      }
+      res.json(users);
+    }
+  );
+});
+
+app.put('/api/admin/users/:userId/admin', authenticateToken, requireAdmin, (req, res) => {
+  const { userId } = req.params;
+  const { isAdmin } = req.body;
+
+  db.run(
+    'UPDATE users SET isAdmin = ? WHERE id = ?',
+    [isAdmin, userId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error updating user admin status' });
+      }
+
+      if (this.changes === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      res.json({ message: 'User admin status updated successfully' });
+    }
+  );
 });
 
 app.listen(PORT, () => {
