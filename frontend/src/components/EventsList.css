@@ -41,10 +41,36 @@
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
 }
 
-.event-image {
+.event-image-container {
   width: 100%;
   height: 200px;
+  overflow: hidden;
+}
+
+.event-image {
+  width: 100%;
+  height: 100%;
   object-fit: cover;
+}
+
+.event-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  text-align: center;
+  padding: 1rem;
+}
+
+.event-placeholder h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  line-height: 1.3;
 }
 
 .event-details {

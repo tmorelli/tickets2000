@@ -195,6 +195,7 @@ app.get('/api/events', (req, res) => {
     SELECT e.*, v.name as venueName, v.address as venueAddress
     FROM events e
     JOIN venues v ON e.venueId = v.id
+    WHERE e.onSale = 1
     ORDER BY e.date ASC
   `;
 
@@ -343,6 +344,96 @@ app.get('/api/purchases', authenticateToken, (req, res) => {
 });
 
 // Admin Routes
+
+// Admin Events Routes
+app.get('/api/admin/events', authenticateToken, requireAdmin, (req, res) => {
+  const query = `
+    SELECT e.*, v.name as venueName, v.address as venueAddress
+    FROM events e
+    JOIN venues v ON e.venueId = v.id
+    ORDER BY e.date ASC
+  `;
+
+  db.all(query, (err, events) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error fetching events' });
+    }
+    res.json(events);
+  });
+});
+
+app.post('/api/admin/events', authenticateToken, requireAdmin, (req, res) => {
+  const { venueId, title, description, date, imageUrl, onSale } = req.body;
+
+  if (!venueId || !title || !date) {
+    return res.status(400).json({ message: 'Venue, title, and date are required' });
+  }
+
+  const eventId = uuidv4();
+
+  db.run(
+    'INSERT INTO events (id, venueId, title, description, date, imageUrl, onSale) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [eventId, venueId, title, description, date, imageUrl || null, onSale !== false],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error creating event' });
+      }
+
+      res.status(201).json({
+        id: eventId,
+        venueId,
+        title,
+        description,
+        date,
+        imageUrl,
+        onSale: onSale !== false,
+        message: 'Event created successfully'
+      });
+    }
+  );
+});
+
+app.put('/api/admin/events/:eventId', authenticateToken, requireAdmin, (req, res) => {
+  const { eventId } = req.params;
+  const { venueId, title, description, date, imageUrl, onSale } = req.body;
+
+  if (!venueId || !title || !date) {
+    return res.status(400).json({ message: 'Venue, title, and date are required' });
+  }
+
+  db.run(
+    'UPDATE events SET venueId = ?, title = ?, description = ?, date = ?, imageUrl = ?, onSale = ? WHERE id = ?',
+    [venueId, title, description, date, imageUrl, onSale ? 1 : 0, eventId],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error updating event' });
+      }
+
+      if (this.changes === 0) {
+        return res.status(404).json({ message: 'Event not found' });
+      }
+
+      res.json({ message: 'Event updated successfully' });
+    }
+  );
+});
+
+app.delete('/api/admin/events/:eventId', authenticateToken, requireAdmin, (req, res) => {
+  const { eventId } = req.params;
+
+  db.run('DELETE FROM events WHERE id = ?', [eventId], function(err) {
+    if (err) {
+      return res.status(500).json({ message: 'Error deleting event' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    res.json({ message: 'Event deleted successfully' });
+  });
+});
+
 app.get('/api/admin/users', authenticateToken, requireAdmin, (req, res) => {
   db.all(
     'SELECT id, email, firstName, lastName, isAdmin, createdAt FROM users ORDER BY createdAt DESC',

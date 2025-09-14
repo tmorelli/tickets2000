@@ -57,7 +57,15 @@ const EventsList = () => {
       <div className="events-grid">
         {events.map((event) => (
           <div key={event.id} className="event-card">
-            <img src={event.imageUrl} alt={event.title} className="event-image" />
+            <div className="event-image-container">
+              {event.imageUrl ? (
+                <img src={event.imageUrl} alt={event.title} className="event-image" />
+              ) : (
+                <div className="event-placeholder">
+                  <h3>{event.title}</h3>
+                </div>
+              )}
+            </div>
             <div className="event-details">
               <h2>{event.title}</h2>
               <p className="event-venue">{event.venueName}</p>
