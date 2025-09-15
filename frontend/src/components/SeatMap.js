@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import PaymentForm from './PaymentForm';
 import './SeatMap.css';
 
 const SeatMap = () => {
   const { eventId } = useParams();
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, token } = useAuth();
 
   const [event, setEvent] = useState(null);
   const [seats, setSeats] = useState([]);
@@ -15,6 +16,7 @@ const SeatMap = () => {
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
   const [error, setError] = useState('');
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
 
   useEffect(() => {
     const fetchEventAndSeats = async () => {
@@ -54,28 +56,36 @@ const SeatMap = () => {
     }
   };
 
-  const handlePurchase = async () => {
+  const handlePurchaseClick = () => {
     if (selectedSeats.length === 0 || !currentUser) return;
+    setShowPaymentForm(true);
+  };
 
+  const handlePaymentSubmit = async (paymentInfo) => {
     setPurchasing(true);
     try {
-      // Purchase each seat individually
-      const purchasePromises = selectedSeats.map(seat =>
-        axios.post('http://localhost:3001/api/purchase', {
-          eventId,
-          seatId: seat.id
-        })
-      );
+      const seatIds = selectedSeats.map(seat => seat.id);
 
-      await Promise.all(purchasePromises);
+      const response = await axios.post('http://localhost:3001/api/purchase', {
+        eventId,
+        seatIds,
+        paymentInfo
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
 
       alert(`${selectedSeats.length} ticket(s) purchased successfully!`);
+      setShowPaymentForm(false);
       navigate('/purchase-history');
     } catch (error) {
       alert(error.response?.data?.message || 'Error purchasing tickets');
     } finally {
       setPurchasing(false);
     }
+  };
+
+  const handlePaymentCancel = () => {
+    setShowPaymentForm(false);
   };
 
   const getSeatColor = (seat) => {
@@ -211,7 +221,7 @@ const SeatMap = () => {
 
               {currentUser ? (
                 <button
-                  onClick={handlePurchase}
+                  onClick={handlePurchaseClick}
                   disabled={purchasing}
                   className="purchase-btn"
                 >
@@ -261,6 +271,15 @@ const SeatMap = () => {
           )}
         </div>
       </div>
+
+      {showPaymentForm && (
+        <PaymentForm
+          onSubmit={handlePaymentSubmit}
+          onCancel={handlePaymentCancel}
+          totalPrice={selectedSeats.reduce((total, seat) => total + parseFloat(getSeatPrice(seat)), 0).toFixed(2)}
+          selectedSeats={selectedSeats}
+        />
+      )}
     </div>
   );
 };

@@ -333,59 +333,166 @@ app.get('/api/events/:eventId/seats', (req, res) => {
   });
 });
 
-// Purchase Routes
-app.post('/api/purchase', authenticateToken, (req, res) => {
-  const { eventId, seatId } = req.body;
+// Payment Methods Routes
+app.get('/api/payment-methods', authenticateToken, (req, res) => {
   const userId = req.user.userId;
 
-  // Check if seat is already purchased for this event
-  db.get(
-    'SELECT id FROM purchases WHERE eventId = ? AND seatId = ?',
-    [eventId, seatId],
-    (err, existingPurchase) => {
+  db.all(
+    'SELECT id, cardholderName, lastFourDigits, expirationMonth, expirationYear, address, city, state, zipCode, isDefault FROM payment_methods WHERE userId = ? ORDER BY isDefault DESC, createdAt DESC',
+    [userId],
+    (err, paymentMethods) => {
       if (err) {
-        return res.status(500).json({ message: 'Error checking seat availability' });
+        return res.status(500).json({ message: 'Error fetching payment methods' });
       }
-
-      if (existingPurchase) {
-        return res.status(409).json({ message: 'Seat already purchased' });
-      }
-
-      // Get seat details to calculate price
-      const seatQuery = `
-        SELECT s.*, e.title as eventTitle
-        FROM seats s, events e
-        WHERE s.id = ? AND e.id = ?
-      `;
-
-      db.get(seatQuery, [seatId, eventId], (err, seat) => {
-        if (err || !seat) {
-          return res.status(404).json({ message: 'Seat or event not found' });
-        }
-
-        const finalPrice = (seat.basePrice * seat.multiplier).toFixed(2);
-        const purchaseId = uuidv4();
-
-        db.run(
-          'INSERT INTO purchases (id, userId, eventId, seatId, price) VALUES (?, ?, ?, ?, ?)',
-          [purchaseId, userId, eventId, seatId, finalPrice],
-          function(err) {
-            if (err) {
-              return res.status(500).json({ message: 'Error processing purchase' });
-            }
-
-            res.status(201).json({
-              id: purchaseId,
-              eventId,
-              seatId,
-              price: finalPrice,
-              message: 'Purchase successful'
-            });
-          }
-        );
-      });
+      res.json(paymentMethods);
     }
   );
+});
+
+app.post('/api/payment-methods', authenticateToken, (req, res) => {
+  const { cardholderName, cardNumber, expirationMonth, expirationYear, cvv, address, city, state, zipCode, savePaymentInfo } = req.body;
+  const userId = req.user.userId;
+
+  if (!savePaymentInfo) {
+    return res.json({ message: 'Payment processed without saving' });
+  }
+
+  const lastFourDigits = cardNumber.slice(-4);
+  const paymentMethodId = uuidv4();
+
+  // If this is being set as default, update existing default to false
+  db.run('UPDATE payment_methods SET isDefault = FALSE WHERE userId = ?', [userId], (err) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error updating existing payment methods' });
+    }
+
+    db.run(
+      'INSERT INTO payment_methods (id, userId, cardholderName, lastFourDigits, expirationMonth, expirationYear, address, city, state, zipCode, isDefault) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [paymentMethodId, userId, cardholderName, lastFourDigits, expirationMonth, expirationYear, address, city, state, zipCode, true],
+      function(err) {
+        if (err) {
+          return res.status(500).json({ message: 'Error saving payment method' });
+        }
+
+        res.status(201).json({
+          id: paymentMethodId,
+          message: 'Payment method saved successfully'
+        });
+      }
+    );
+  });
+});
+
+// Purchase Routes
+app.post('/api/purchase', authenticateToken, (req, res) => {
+  const { eventId, seatIds, paymentInfo } = req.body;
+  const userId = req.user.userId;
+
+  // Validate payment info is provided
+  if (!paymentInfo || !paymentInfo.cardholderName || !paymentInfo.cardNumber || !paymentInfo.cvv ||
+      !paymentInfo.billingAddress || !paymentInfo.billingCity || !paymentInfo.billingState || !paymentInfo.billingZip ||
+      !paymentInfo.expirationMonth || !paymentInfo.expirationYear) {
+    return res.status(400).json({ message: 'All payment information fields are required' });
+  }
+
+  // Handle both single seat and multiple seats
+  const seatsToProcess = Array.isArray(seatIds) ? seatIds : [seatIds || seatId];
+
+  if (seatsToProcess.length === 0) {
+    return res.status(400).json({ message: 'At least one seat must be selected' });
+  }
+
+  // Check if any seats are already purchased for this event
+  const seatCheckQuery = `SELECT seatId FROM purchases WHERE eventId = ? AND seatId IN (${seatsToProcess.map(() => '?').join(',')})`;
+  db.all(seatCheckQuery, [eventId, ...seatsToProcess], (err, existingPurchases) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error checking seat availability' });
+    }
+
+    if (existingPurchases.length > 0) {
+      const unavailableSeats = existingPurchases.map(p => p.seatId);
+      return res.status(409).json({
+        message: 'Some seats are already purchased',
+        unavailableSeats
+      });
+    }
+
+    // Get seat details to calculate total price
+    const seatQuery = `
+      SELECT s.*, e.title as eventTitle
+      FROM seats s
+      JOIN events e ON s.venueId = e.venueId
+      WHERE s.id IN (${seatsToProcess.map(() => '?').join(',')}) AND e.id = ?
+    `;
+
+    db.all(seatQuery, [...seatsToProcess, eventId], (err, seats) => {
+      if (err || seats.length !== seatsToProcess.length) {
+        return res.status(404).json({ message: 'Some seats or event not found' });
+      }
+
+      let totalPrice = 0;
+      seats.forEach(seat => {
+        totalPrice += seat.basePrice * seat.multiplier;
+      });
+      totalPrice = totalPrice.toFixed(2);
+
+      // Save payment method if requested
+      const savePaymentAndPurchase = (paymentMethodId = null) => {
+        // Create purchases for all seats
+        const purchasePromises = seatsToProcess.map(seatId => {
+          const seat = seats.find(s => s.id === seatId);
+          const seatPrice = (seat.basePrice * seat.multiplier).toFixed(2);
+          const purchaseId = uuidv4();
+
+          return new Promise((resolve, reject) => {
+            db.run(
+              'INSERT INTO purchases (id, userId, eventId, seatId, price) VALUES (?, ?, ?, ?, ?)',
+              [purchaseId, userId, eventId, seatId, seatPrice],
+              function(err) {
+                if (err) reject(err);
+                else resolve({ id: purchaseId, seatId, price: seatPrice });
+              }
+            );
+          });
+        });
+
+        Promise.all(purchasePromises)
+          .then(purchases => {
+            res.status(201).json({
+              purchases,
+              eventId,
+              totalPrice,
+              message: 'Purchase successful'
+            });
+          })
+          .catch(err => {
+            res.status(500).json({ message: 'Error processing purchase' });
+          });
+      };
+
+      // Save payment method if savePaymentInfo is true
+      if (paymentInfo.savePaymentInfo) {
+        const lastFourDigits = paymentInfo.cardNumber.slice(-4);
+        db.run(
+          `INSERT INTO payment_methods
+           (userId, cardholderName, lastFourDigits, expirationMonth, expirationYear,
+            address, city, state, zipCode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [userId, paymentInfo.cardholderName, lastFourDigits, paymentInfo.expirationMonth,
+           paymentInfo.expirationYear, paymentInfo.billingAddress, paymentInfo.billingCity,
+           paymentInfo.billingState, paymentInfo.billingZip],
+          function(err) {
+            if (err) {
+              console.error('Error saving payment method:', err);
+            }
+            savePaymentAndPurchase(err ? null : this.lastID);
+          }
+        );
+      } else {
+        savePaymentAndPurchase();
+      }
+    });
+  });
 });
 
 app.get('/api/purchases', authenticateToken, (req, res) => {
@@ -758,6 +865,59 @@ app.delete('/api/friends/:friendId', authenticateToken, (req, res) => {
       }
 
       res.json({ message: 'Friend removed successfully' });
+    }
+  );
+});
+
+// Get user's saved payment methods
+app.get('/api/payment-methods', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
+  db.all(
+    'SELECT id, cardholderName, lastFourDigits, expirationMonth, expirationYear, address, city, state, zipCode FROM payment_methods WHERE userId = ?',
+    [userId],
+    (err, paymentMethods) => {
+      if (err) {
+        return res.status(500).json({ message: 'Error fetching payment methods' });
+      }
+      res.json(paymentMethods);
+    }
+  );
+});
+
+// Save new payment method
+app.post('/api/payment-methods', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+  const {
+    cardholderName,
+    cardNumber,
+    expirationMonth,
+    expirationYear,
+    cvv,
+    billingAddress,
+    billingCity,
+    billingState,
+    billingZip
+  } = req.body;
+
+  // Get last 4 digits of card
+  const lastFourDigits = cardNumber.slice(-4);
+
+  db.run(
+    `INSERT INTO payment_methods
+     (userId, cardholderName, lastFourDigits, expirationMonth, expirationYear,
+      address, city, state, zipCode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId, cardholderName, lastFourDigits, expirationMonth, expirationYear,
+     billingAddress, billingCity, billingState, billingZip],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ message: 'Error saving payment method' });
+      }
+      res.json({
+        message: 'Payment method saved successfully',
+        paymentMethodId: this.lastID
+      });
     }
   );
 });
