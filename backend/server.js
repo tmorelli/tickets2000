@@ -272,7 +272,28 @@ app.get('/api/events', authenticateToken, (req, res) => {
             eventsWithSocialInfo.push(event);
 
             if (processed === events.length) {
-              res.json(eventsWithSocialInfo);
+              // Sort events by priority:
+              // 1. Events user is attending (highest priority)
+              // 2. Events friends are attending (medium priority)
+              // 3. Remaining events chronologically (lowest priority)
+              const sortedEvents = eventsWithSocialInfo.sort((a, b) => {
+                // Priority 1: User attending vs not attending
+                if (a.isUserAttending && !b.isUserAttending) return -1;
+                if (!a.isUserAttending && b.isUserAttending) return 1;
+
+                // If both or neither user attending, check friends
+                const aHasFriends = a.friendsAttending && a.friendsAttending.length > 0;
+                const bHasFriends = b.friendsAttending && b.friendsAttending.length > 0;
+
+                // Priority 2: Events with friends vs without friends
+                if (aHasFriends && !bHasFriends) return -1;
+                if (!aHasFriends && bHasFriends) return 1;
+
+                // Priority 3: Sort chronologically by date (earliest first)
+                return new Date(a.date) - new Date(b.date);
+              });
+
+              res.json(sortedEvents);
             }
           });
         }

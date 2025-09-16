@@ -1,0 +1,102 @@
+.admin-users-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.admin-users-container h1 {
+  color: #333;
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.loading {
+  text-align: center;
+  padding: 2rem;
+  font-size: 1.2rem;
+  color: #666;
+}
+
+.error-message {
+  background-color: #fee;
+  color: #c33;
+  padding: 1rem;
+  border-radius: 5px;
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.users-table-container {
+  overflow-x: auto;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+  padding: 1rem;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.users-table th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.users-table tr:hover {
+  background-color: #f8f9fa;
+}
+
+.admin-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.admin-badge.admin {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.admin-badge.regular {
+  background-color: #e2e3e5;
+  color: #6c757d;
+}
+
+.admin-toggle-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background-color 0.3s ease;
+}
+
+.admin-toggle-btn.promote {
+  background-color: #28a745;
+  color: white;
+}
+
+.admin-toggle-btn.promote:hover {
+  background-color: #218838;
+}
+
+.admin-toggle-btn.demote {
+  background-color: #dc3545;
+  color: white;
+}
+
+.admin-toggle-btn.demote:hover {
+  background-color: #c82333;
+}
