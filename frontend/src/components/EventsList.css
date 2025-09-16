@@ -134,6 +134,30 @@
   opacity: 0.9;
 }
 
+.select-seats-btn.disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.select-seats-btn.disabled:hover {
+  opacity: 0.6;
+}
+
+.on-sale-info {
+  text-align: center;
+}
+
+.on-sale-date {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 152, 0, 0.1) 100%);
+  color: #ff6f00;
+  padding: 0.75rem 1rem;
+  border-radius: 5px;
+  margin-bottom: 1rem;
+  font-weight: bold;
+  border: 2px solid #ffc107;
+}
+
 /* Social Indicators */
 .social-indicators {
   position: absolute;

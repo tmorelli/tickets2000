@@ -41,6 +41,25 @@ const EventsList = () => {
     });
   };
 
+  const isOnSaleNow = (onSaleDateString) => {
+    if (!onSaleDateString) return true; // If no onSaleDate set, assume it's on sale
+    const onSaleDate = new Date(onSaleDateString);
+    const now = new Date();
+    return now >= onSaleDate;
+  };
+
+  const formatOnSaleDate = (onSaleDateString) => {
+    if (!onSaleDateString) return 'TBA';
+    const date = new Date(onSaleDateString);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
   const showFriendsList = (friends) => {
     setSelectedEventFriends(friends);
     setShowFriendsModal(true);
@@ -100,9 +119,20 @@ const EventsList = () => {
               <p className="event-address">{event.venueAddress}</p>
               <p className="event-date">{formatDate(event.date)}</p>
               <p className="event-description">{event.description}</p>
-              <Link to={`/events/${event.id}`} className="select-seats-btn">
-                Select Seats
-              </Link>
+              {isOnSaleNow(event.onSaleDate) ? (
+                <Link to={`/events/${event.id}`} className="select-seats-btn">
+                  Select Seats
+                </Link>
+              ) : (
+                <div className="on-sale-info">
+                  <div className="on-sale-date">
+                    On Sale: {formatOnSaleDate(event.onSaleDate)}
+                  </div>
+                  <button className="select-seats-btn disabled" disabled>
+                    Tickets Not Available
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
