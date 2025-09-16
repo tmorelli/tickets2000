@@ -23,19 +23,35 @@ const Navbar = () => {
           {currentUser ? (
             <>
               <Link to="/events" className="nav-link">Events</Link>
-              <Link to="/purchase-history" className="nav-link">My Tickets</Link>
-              <Link to="/marketplace" className="nav-link">Marketplace</Link>
-              <Link to="/group-purchase" className="nav-link">Group Purchase</Link>
-              <Link to="/friends" className="nav-link">Friends</Link>
+
+              {/* Tickets Dropdown */}
+              <div className="nav-dropdown">
+                <span className="nav-menu-label">My Tickets ▾</span>
+                <div className="nav-dropdown-content">
+                  <Link to="/purchase-history" className="nav-dropdown-link">Purchase History</Link>
+                  <Link to="/marketplace" className="nav-dropdown-link">Marketplace</Link>
+                </div>
+              </div>
+
+              {/* Social Dropdown */}
+              <div className="nav-dropdown">
+                <span className="nav-menu-label">Social ▾</span>
+                <div className="nav-dropdown-content">
+                  <Link to="/group-purchase" className="nav-dropdown-link">Group Purchase</Link>
+                  <Link to="/friends" className="nav-dropdown-link">Friends</Link>
+                </div>
+              </div>
+
               {isAdmin && (
-                <div className="admin-dropdown">
-                  <span className="admin-menu-label">Admin</span>
-                  <div className="admin-dropdown-content">
-                    <Link to="/admin/users" className="admin-link">Users</Link>
-                    <Link to="/admin/events" className="admin-link">Events</Link>
+                <div className="nav-dropdown">
+                  <span className="nav-menu-label">Admin ▾</span>
+                  <div className="nav-dropdown-content">
+                    <Link to="/admin/users" className="nav-dropdown-link">Users</Link>
+                    <Link to="/admin/events" className="nav-dropdown-link">Events</Link>
                   </div>
                 </div>
               )}
+
               <div className="nav-user">
                 <span>Hello, {currentUser.firstName}</span>
                 <button onClick={handleLogout} className="logout-btn">
