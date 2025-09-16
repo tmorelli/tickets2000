@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import CountdownTimer from './CountdownTimer';
 import './EventsList.css';
 
 const EventsList = () => {
@@ -128,6 +129,7 @@ const EventsList = () => {
                   <div className="on-sale-date">
                     On Sale: {formatOnSaleDate(event.onSaleDate)}
                   </div>
+                  <CountdownTimer targetDate={event.onSaleDate} />
                   <button className="select-seats-btn disabled" disabled>
                     Tickets Not Available
                   </button>
