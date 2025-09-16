@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import PaymentForm from './PaymentForm';
@@ -10,6 +10,7 @@ const SeatMap = () => {
   const { eventId } = useParams();
   const navigate = useNavigate();
   const { currentUser, token } = useAuth();
+  const [searchParams] = useSearchParams();
 
   const [event, setEvent] = useState(null);
   const [seats, setSeats] = useState([]);
@@ -19,25 +20,89 @@ const SeatMap = () => {
   const [error, setError] = useState('');
   const [showPaymentForm, setShowPaymentForm] = useState(false);
 
+  // Group purchase state
+  const [isGroupPurchase, setIsGroupPurchase] = useState(false);
+  const [groupPurchaseData, setGroupPurchaseData] = useState(null);
+  const [requiredSeats, setRequiredSeats] = useState(0);
+
+  // Available groups for invited users
+  const [availableGroups, setAvailableGroups] = useState([]);
+  const [showGroupJoinModal, setShowGroupJoinModal] = useState(false);
+
   useEffect(() => {
     const fetchEventAndSeats = async () => {
       try {
-        const [eventResponse, seatsResponse] = await Promise.all([
+        const groupId = searchParams.get('groupId');
+
+        const promises = [
           axios.get(`${API_BASE_URL}/events/${eventId}`),
           axios.get(`${API_BASE_URL}/events/${eventId}/seats`)
-        ]);
+        ];
 
-        setEvent(eventResponse.data);
-        setSeats(seatsResponse.data);
+        // If this is a group purchase, fetch group data
+        if (groupId) {
+          promises.push(
+            axios.get(`${API_BASE_URL}/groups/${groupId}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            })
+          );
+        }
+
+        const responses = await Promise.all(promises);
+
+        setEvent(responses[0].data);
+        setSeats(responses[1].data);
+
+        // Handle group purchase data
+        if (groupId && responses[2]) {
+          const groupData = responses[2].data;
+          setIsGroupPurchase(true);
+          setGroupPurchaseData(groupData);
+
+          // Calculate required seats (leader + joined members)
+          const memberCount = groupData.members ? groupData.members.filter(m => m.status === 'joined').length : 0;
+          const totalRequired = memberCount + 1; // +1 for leader
+          setRequiredSeats(totalRequired);
+
+          // Verify user is the group leader
+          if (groupData.leaderId !== currentUser?.id) {
+            setError('Only the group leader can purchase tickets for the group');
+            return;
+          }
+        } else {
+          // If not a group purchase, check for available groups to join
+          try {
+            const groupsResponse = await axios.get(`${API_BASE_URL}/events/${eventId}/groups`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+
+            // Filter groups where user is invited
+            const invitedGroups = groupsResponse.data.filter(group =>
+              group.members && group.members.some(member =>
+                member.userId === currentUser?.id && member.status === 'invited'
+              )
+            );
+
+            setAvailableGroups(invitedGroups);
+
+            // If user has invites, show join modal
+            if (invitedGroups.length > 0) {
+              setShowGroupJoinModal(true);
+            }
+          } catch (error) {
+            console.error('Error fetching groups for event:', error);
+          }
+        }
       } catch (error) {
         setError('Error loading event details');
+        console.error('Error:', error);
       } finally {
         setLoading(false);
       }
     };
 
     fetchEventAndSeats();
-  }, [eventId]);
+  }, [eventId, searchParams, token, currentUser]);
 
   const handleSeatClick = (seat) => {
     if (seat.isPurchased) return;
@@ -51,12 +116,17 @@ const SeatMap = () => {
       newSelectedSeats = selectedSeats.filter(s => s.id !== seat.id);
       setSelectedSeats(newSelectedSeats);
     } else {
-      // Add seat to selection (max 8 seats)
-      if (selectedSeats.length < 8) {
+      // For group purchases, enforce exact seat count
+      const maxSeats = isGroupPurchase ? requiredSeats : 8;
+      const seatLimitMessage = isGroupPurchase
+        ? `You must select exactly ${requiredSeats} seats for your group (${requiredSeats - 1} members + you)`
+        : 'You can select a maximum of 8 seats';
+
+      if (selectedSeats.length < maxSeats) {
         newSelectedSeats = [...selectedSeats, seat];
         setSelectedSeats(newSelectedSeats);
       } else {
-        alert('You can select a maximum of 8 seats');
+        alert(seatLimitMessage);
         return;
       }
     }
@@ -106,25 +176,55 @@ const SeatMap = () => {
 
   const handlePurchaseClick = () => {
     if (selectedSeats.length === 0 || !currentUser) return;
+
+    // For group purchases, enforce exact seat count
+    if (isGroupPurchase && selectedSeats.length !== requiredSeats) {
+      alert(`You must select exactly ${requiredSeats} seats for your group (${requiredSeats - 1} members + you)`);
+      return;
+    }
+
     setShowPaymentForm(true);
   };
 
   const handlePaymentSubmit = async (paymentInfo) => {
     setPurchasing(true);
     try {
-      const seatIds = selectedSeats.map(seat => seat.id);
+      let response;
 
-      const response = await axios.post('${API_BASE_URL}/purchase', {
-        eventId,
-        seatIds,
-        paymentInfo
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      if (isGroupPurchase) {
+        // Group purchase
+        const groupId = searchParams.get('groupId');
+        const seats = selectedSeats.map(seat => ({
+          seatId: seat.id,
+          price: seat.finalPrice
+        }));
 
-      alert(`${selectedSeats.length} ticket(s) purchased successfully!`);
-      setShowPaymentForm(false);
-      navigate('/purchase-history');
+        response = await axios.post(`${API_BASE_URL}/groups/${groupId}/purchase`, {
+          seats,
+          paymentInfo
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        alert(`Group tickets purchased successfully! ${seats.length} seats assigned to group members.`);
+        setShowPaymentForm(false);
+        navigate('/group-purchase');
+      } else {
+        // Individual purchase
+        const seatIds = selectedSeats.map(seat => seat.id);
+
+        response = await axios.post(`${API_BASE_URL}/purchase`, {
+          eventId,
+          seatIds,
+          paymentInfo
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        alert(`${selectedSeats.length} ticket(s) purchased successfully!`);
+        setShowPaymentForm(false);
+        navigate('/purchase-history');
+      }
     } catch (error) {
       alert(error.response?.data?.message || 'Error purchasing tickets');
     } finally {
@@ -134,6 +234,19 @@ const SeatMap = () => {
 
   const handlePaymentCancel = () => {
     setShowPaymentForm(false);
+  };
+
+  const handleJoinGroup = async (groupId) => {
+    try {
+      await axios.post(`${API_BASE_URL}/groups/${groupId}/join`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert('Successfully joined group!');
+      setShowGroupJoinModal(false);
+      navigate('/group-purchase');
+    } catch (error) {
+      alert(error.response?.data?.message || 'Failed to join group');
+    }
   };
 
   const getSeatColor = (seat) => {
@@ -340,6 +453,47 @@ const SeatMap = () => {
           totalPrice={selectedSeats.reduce((total, seat) => total + parseFloat(getSeatPrice(seat)), 0).toFixed(2)}
           selectedSeats={selectedSeats}
         />
+      )}
+
+      {/* Group Join Modal */}
+      {showGroupJoinModal && availableGroups.length > 0 && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3>Group Invitations</h3>
+            <p>You've been invited to join the following groups for this event:</p>
+            <div className="groups-list">
+              {availableGroups.map(group => (
+                <div key={group.id} className="group-invitation">
+                  <div className="group-info">
+                    <h4>{group.groupName}</h4>
+                    <p><strong>Leader:</strong> {group.leaderFirstName} {group.leaderLastName}</p>
+                    <p><strong>Target Seats:</strong> {group.targetSeats}</p>
+                    <p><strong>Current Members:</strong> {group.currentMembers || 0}</p>
+                    {group.estimatedPricePerSeat && (
+                      <p><strong>Estimated Price:</strong> ${group.estimatedPricePerSeat}</p>
+                    )}
+                  </div>
+                  <div className="group-actions">
+                    <button
+                      onClick={() => handleJoinGroup(group.id)}
+                      className="join-group-btn"
+                    >
+                      Join Group
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button
+                onClick={() => setShowGroupJoinModal(false)}
+                className="skip-btn"
+              >
+                Skip & Purchase Individual Tickets
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import axios from 'axios';
 import { API_BASE_URL } from '../config/api';
 import './PaymentForm.css';
 
-const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [] }) => {
+const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [], isGroupPayment = false }) => {
   const { token } = useAuth();
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
@@ -20,7 +20,8 @@ const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [] }) => 
     billingCity: '',
     billingState: '',
     billingZip: '',
-    savePaymentInfo: false
+    savePaymentInfo: false,
+    amount: isGroupPayment ? '' : totalPrice
   });
 
   const [errors, setErrors] = useState({});
@@ -169,9 +170,32 @@ const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [] }) => 
         <h2>Payment Information</h2>
 
         <div className="order-summary">
-          <h3>Order Summary</h3>
-          <p>Selected Seats: {selectedSeats.length} seat{selectedSeats.length !== 1 ? 's' : ''}</p>
-          <p className="total-price">Total: ${totalPrice}</p>
+          <h3>{isGroupPayment ? 'Group Pre-Payment' : 'Order Summary'}</h3>
+          {isGroupPayment ? (
+            <>
+              <p>Making a pre-payment for group purchase</p>
+              <div className="form-group">
+                <label htmlFor="amount">Payment Amount *</label>
+                <input
+                  type="number"
+                  id="amount"
+                  name="amount"
+                  value={formData.amount}
+                  onChange={handleInputChange}
+                  min="1"
+                  step="0.01"
+                  placeholder="Enter amount to pay"
+                  required
+                />
+                {errors.amount && <span className="error">{errors.amount}</span>}
+              </div>
+            </>
+          ) : (
+            <>
+              <p>Selected Seats: {selectedSeats.length} seat{selectedSeats.length !== 1 ? 's' : ''}</p>
+              <p className="total-price">Total: ${totalPrice}</p>
+            </>
+          )}
         </div>
 
         {paymentMethods.length > 0 && (

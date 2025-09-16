@@ -11,6 +11,7 @@ import AdminUsers from './components/AdminUsers';
 import AdminEvents from './components/AdminEvents';
 import Friends from './components/Friends';
 import Marketplace from './components/Marketplace';
+import GroupPurchase from './components/GroupPurchase';
 import './App.css';
 
 const ProtectedRoute = ({ children }) => {
@@ -113,6 +114,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Marketplace />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/group-purchase"
+                element={
+                  <ProtectedRoute>
+                    <GroupPurchase />
                   </ProtectedRoute>
                 }
               />

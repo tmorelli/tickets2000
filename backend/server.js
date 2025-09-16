@@ -102,6 +102,68 @@ db.serialize(() => {
     FOREIGN KEY (seatId) REFERENCES seats (id),
     FOREIGN KEY (buyerId) REFERENCES users (id)
   )`);
+
+  // Create friends table
+  db.run(`CREATE TABLE IF NOT EXISTS friends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT NOT NULL,
+    friendId TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (userId) REFERENCES users (id),
+    FOREIGN KEY (friendId) REFERENCES users (id),
+    UNIQUE(userId, friendId)
+  )`);
+
+  // Create group_purchases table
+  db.run(`CREATE TABLE IF NOT EXISTS group_purchases (
+    id TEXT PRIMARY KEY,
+    eventId TEXT NOT NULL,
+    leaderId TEXT NOT NULL,
+    groupName TEXT NOT NULL,
+    maxMembers INTEGER NOT NULL DEFAULT 10,
+    targetSeats INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'forming',
+    totalPrepaid DECIMAL(10,2) DEFAULT 0,
+    estimatedPricePerSeat DECIMAL(10,2),
+    actualTotalCost DECIMAL(10,2),
+    purchaseAttemptAt DATETIME,
+    successfulPurchaseAt DATETIME,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (eventId) REFERENCES events (id),
+    FOREIGN KEY (leaderId) REFERENCES users (id)
+  )`);
+
+  // Create group_members table
+  db.run(`CREATE TABLE IF NOT EXISTS group_members (
+    id TEXT PRIMARY KEY,
+    groupId TEXT NOT NULL,
+    userId TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'invited',
+    joinedAt DATETIME,
+    seatAssignedId TEXT,
+    finalPrice DECIMAL(10,2),
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (groupId) REFERENCES group_purchases (id),
+    FOREIGN KEY (userId) REFERENCES users (id),
+    FOREIGN KEY (seatAssignedId) REFERENCES seats (id),
+    UNIQUE(groupId, userId)
+  )`);
+
+  // Create group_payments table
+  db.run(`CREATE TABLE IF NOT EXISTS group_payments (
+    id TEXT PRIMARY KEY,
+    groupId TEXT NOT NULL,
+    userId TEXT NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    paymentMethod TEXT NOT NULL,
+    paymentStatus TEXT NOT NULL DEFAULT 'pending',
+    refundAmount DECIMAL(10,2) DEFAULT 0,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    processedAt DATETIME,
+    FOREIGN KEY (groupId) REFERENCES group_purchases (id),
+    FOREIGN KEY (userId) REFERENCES users (id)
+  )`);
 });
 
 // Middleware to verify JWT token
@@ -1341,6 +1403,459 @@ app.post('/api/payment-methods', authenticateToken, (req, res) => {
         message: 'Payment method saved successfully',
         paymentMethodId: this.lastID
       });
+    }
+  );
+});
+
+// Group Purchase Routes
+
+// Create a new group purchase
+app.post('/api/groups', authenticateToken, (req, res) => {
+  const { eventId, groupName, maxMembers = 10, targetSeats, estimatedPricePerSeat } = req.body;
+  const leaderId = req.user.userId;
+  const groupId = uuidv4();
+
+  if (!eventId || !groupName || !targetSeats) {
+    return res.status(400).json({ message: 'Event ID, group name, and target seats are required' });
+  }
+
+  db.run(
+    `INSERT INTO group_purchases (id, eventId, leaderId, groupName, maxMembers, targetSeats, estimatedPricePerSeat)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [groupId, eventId, leaderId, groupName, maxMembers, targetSeats, estimatedPricePerSeat],
+    function(err) {
+      if (err) {
+        console.error('Error creating group:', err);
+        return res.status(500).json({ message: 'Error creating group purchase' });
+      }
+      res.status(201).json({
+        id: groupId,
+        eventId,
+        leaderId,
+        groupName,
+        maxMembers,
+        targetSeats,
+        estimatedPricePerSeat,
+        status: 'forming'
+      });
+    }
+  );
+});
+
+// Get user's groups (as leader or member)
+app.get('/api/groups', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT DISTINCT
+      gp.*,
+      e.title as eventTitle,
+      e.date as eventDate,
+      v.name as venueName,
+      u.firstName as leaderFirstName,
+      u.lastName as leaderLastName,
+      (SELECT COUNT(*) FROM group_members gm WHERE gm.groupId = gp.id AND gm.status = 'joined') as currentMembers
+    FROM group_purchases gp
+    JOIN events e ON gp.eventId = e.id
+    JOIN venues v ON e.venueId = v.id
+    JOIN users u ON gp.leaderId = u.id
+    LEFT JOIN group_members gm ON gp.id = gm.groupId
+    WHERE gp.leaderId = ? OR (gm.userId = ? AND gm.status IN ('joined', 'invited'))
+    ORDER BY gp.createdAt DESC
+  `;
+
+  db.all(query, [userId, userId], (err, groups) => {
+    if (err) {
+      console.error('Error fetching groups:', err);
+      return res.status(500).json({ message: 'Error fetching groups' });
+    }
+    res.json(groups);
+  });
+});
+
+// Get specific group details
+app.get('/api/groups/:groupId', authenticateToken, (req, res) => {
+  const { groupId } = req.params;
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT
+      gp.*,
+      e.title as eventTitle,
+      e.date as eventDate,
+      v.name as venueName,
+      u.firstName as leaderFirstName,
+      u.lastName as leaderLastName
+    FROM group_purchases gp
+    JOIN events e ON gp.eventId = e.id
+    JOIN venues v ON e.venueId = v.id
+    JOIN users u ON gp.leaderId = u.id
+    WHERE gp.id = ?
+  `;
+
+  db.get(query, [groupId], (err, group) => {
+    if (err) {
+      console.error('Error fetching group:', err);
+      return res.status(500).json({ message: 'Error fetching group' });
+    }
+
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Check if user is leader or member
+    const memberQuery = `
+      SELECT userId FROM group_members WHERE groupId = ? AND userId = ?
+      UNION
+      SELECT leaderId as userId FROM group_purchases WHERE id = ? AND leaderId = ?
+    `;
+
+    db.get(memberQuery, [groupId, userId, groupId, userId], (err, access) => {
+      if (err) {
+        console.error('Error checking access:', err);
+        return res.status(500).json({ message: 'Error checking access' });
+      }
+
+      if (!access) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+
+      // Get group members
+      const membersQuery = `
+        SELECT
+          gm.*,
+          u.firstName,
+          u.lastName,
+          u.email,
+          (SELECT SUM(amount) FROM group_payments gp WHERE gp.groupId = ? AND gp.userId = gm.userId AND gp.paymentStatus = 'completed') as paidAmount
+        FROM group_members gm
+        JOIN users u ON gm.userId = u.id
+        WHERE gm.groupId = ?
+        ORDER BY gm.createdAt ASC
+      `;
+
+      db.all(membersQuery, [groupId, groupId], (err, members) => {
+        if (err) {
+          console.error('Error fetching members:', err);
+          return res.status(500).json({ message: 'Error fetching members' });
+        }
+
+        res.json({
+          ...group,
+          members: members || []
+        });
+      });
+    });
+  });
+});
+
+// Invite friends to group
+app.post('/api/groups/:groupId/invite', authenticateToken, (req, res) => {
+  const { groupId } = req.params;
+  const { friendIds } = req.body;
+  const userId = req.user.userId;
+
+  if (!friendIds || !Array.isArray(friendIds)) {
+    return res.status(400).json({ message: 'Friend IDs array is required' });
+  }
+
+  // Check if user is the group leader
+  db.get(
+    'SELECT * FROM group_purchases WHERE id = ? AND leaderId = ?',
+    [groupId, userId],
+    (err, group) => {
+      if (err) {
+        console.error('Error checking group leadership:', err);
+        return res.status(500).json({ message: 'Error checking group access' });
+      }
+
+      if (!group) {
+        return res.status(403).json({ message: 'Only group leaders can invite members' });
+      }
+
+      // Add members to group
+      const insertPromises = friendIds.map(friendId => {
+        return new Promise((resolve, reject) => {
+          const memberId = uuidv4();
+          db.run(
+            'INSERT INTO group_members (id, groupId, userId, status) VALUES (?, ?, ?, ?)',
+            [memberId, groupId, friendId, 'invited'],
+            function(err) {
+              if (err) {
+                if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+                  resolve({ friendId, status: 'already_invited' });
+                } else {
+                  reject(err);
+                }
+              } else {
+                resolve({ friendId, status: 'invited' });
+              }
+            }
+          );
+        });
+      });
+
+      Promise.all(insertPromises)
+        .then(results => {
+          res.json({ message: 'Invitations sent', results });
+        })
+        .catch(err => {
+          console.error('Error sending invitations:', err);
+          res.status(500).json({ message: 'Error sending invitations' });
+        });
+    }
+  );
+});
+
+// Join a group (accept invitation)
+app.post('/api/groups/:groupId/join', authenticateToken, (req, res) => {
+  const { groupId } = req.params;
+  const userId = req.user.userId;
+
+  db.run(
+    'UPDATE group_members SET status = ?, joinedAt = datetime("now") WHERE groupId = ? AND userId = ? AND status = ?',
+    ['joined', groupId, userId, 'invited'],
+    function(err) {
+      if (err) {
+        console.error('Error joining group:', err);
+        return res.status(500).json({ message: 'Error joining group' });
+      }
+
+      if (this.changes === 0) {
+        return res.status(404).json({ message: 'Invitation not found or already processed' });
+      }
+
+      res.json({ message: 'Successfully joined group' });
+    }
+  );
+});
+
+// Make pre-payment for group
+app.post('/api/groups/:groupId/payment', authenticateToken, (req, res) => {
+  const { groupId } = req.params;
+  const { amount, paymentMethod } = req.body;
+  const userId = req.user.userId;
+
+  if (!amount || !paymentMethod) {
+    return res.status(400).json({ message: 'Amount and payment method are required' });
+  }
+
+  // Check if user is a member of the group
+  db.get(
+    'SELECT * FROM group_members WHERE groupId = ? AND userId = ? AND status = ?',
+    [groupId, userId, 'joined'],
+    (err, member) => {
+      if (err) {
+        console.error('Error checking membership:', err);
+        return res.status(500).json({ message: 'Error checking membership' });
+      }
+
+      if (!member) {
+        return res.status(403).json({ message: 'Must be a group member to make payments' });
+      }
+
+      const paymentId = uuidv4();
+      db.run(
+        `INSERT INTO group_payments (id, groupId, userId, amount, paymentMethod, paymentStatus, processedAt)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [paymentId, groupId, userId, amount, paymentMethod, 'completed'],
+        function(err) {
+          if (err) {
+            console.error('Error processing payment:', err);
+            return res.status(500).json({ message: 'Error processing payment' });
+          }
+
+          // Update total prepaid amount
+          db.run(
+            'UPDATE group_purchases SET totalPrepaid = (SELECT SUM(amount) FROM group_payments WHERE groupId = ? AND paymentStatus = ?) WHERE id = ?',
+            [groupId, 'completed', groupId],
+            (err) => {
+              if (err) {
+                console.error('Error updating total prepaid:', err);
+              }
+            }
+          );
+
+          res.json({
+            id: paymentId,
+            message: 'Payment processed successfully',
+            amount
+          });
+        }
+      );
+    }
+  );
+});
+
+// Get available groups for an event that user can join
+app.get('/api/events/:eventId/groups', authenticateToken, (req, res) => {
+  const { eventId } = req.params;
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT
+      gp.*,
+      u.firstName as leaderFirstName,
+      u.lastName as leaderLastName,
+      (SELECT COUNT(*) FROM group_members gm WHERE gm.groupId = gp.id AND gm.status = 'joined') as currentMembers,
+      EXISTS(
+        SELECT 1 FROM group_members gm2
+        WHERE gm2.groupId = gp.id AND gm2.userId = ?
+      ) as userIsMember,
+      EXISTS(
+        SELECT 1 FROM friends f
+        WHERE ((f.userId = ? AND f.friendId = gp.leaderId) OR (f.userId = gp.leaderId AND f.friendId = ?))
+        AND f.status = 'accepted'
+      ) as isLeaderFriend
+    FROM group_purchases gp
+    JOIN users u ON gp.leaderId = u.id
+    WHERE gp.eventId = ? AND gp.status = 'forming'
+    ORDER BY gp.createdAt DESC
+  `;
+
+  db.all(query, [userId, userId, userId, eventId], (err, groups) => {
+    if (err) {
+      console.error('Error fetching event groups:', err);
+      return res.status(500).json({ message: 'Error fetching groups' });
+    }
+    res.json(groups);
+  });
+});
+
+// Purchase tickets for a group (group leader only)
+app.post('/api/groups/:groupId/purchase', authenticateToken, (req, res) => {
+  const { groupId } = req.params;
+  const { seats, paymentInfo } = req.body;
+  const userId = req.user.userId;
+
+  if (!seats || !Array.isArray(seats) || seats.length === 0) {
+    return res.status(400).json({ message: 'Seats are required' });
+  }
+
+  // Check if user is the group leader
+  db.get(
+    'SELECT * FROM group_purchases WHERE id = ? AND leaderId = ?',
+    [groupId, userId],
+    async (err, group) => {
+      if (err) {
+        console.error('Error checking group leadership:', err);
+        return res.status(500).json({ message: 'Error checking group access' });
+      }
+
+      if (!group) {
+        return res.status(403).json({ message: 'Only group leaders can purchase tickets' });
+      }
+
+      // Get group members count (including leader)
+      db.get(
+        'SELECT COUNT(*) + 1 as totalMembers FROM group_members WHERE groupId = ? AND status = ?',
+        [groupId, 'joined'],
+        (err, memberCount) => {
+          if (err) {
+            console.error('Error counting members:', err);
+            return res.status(500).json({ message: 'Error counting group members' });
+          }
+
+          if (seats.length !== memberCount.totalMembers) {
+            return res.status(400).json({
+              message: `You must select exactly ${memberCount.totalMembers} seats for your group members`
+            });
+          }
+
+          // Start transaction to purchase seats
+          db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+
+            let totalCost = 0;
+            let purchaseIds = [];
+            let completedPurchases = 0;
+            let hasError = false;
+
+            // Purchase each seat
+            seats.forEach((seat, index) => {
+              const purchaseId = require('uuid').v4();
+
+              db.run(
+                'INSERT INTO purchases (id, userId, eventId, seatId, price, purchaseDate) VALUES (?, ?, ?, ?, ?, datetime("now"))',
+                [purchaseId, userId, group.eventId, seat.seatId, seat.price],
+                function(err) {
+                  if (err) {
+                    console.error('Error purchasing seat:', err);
+                    hasError = true;
+                    return;
+                  }
+
+                  purchaseIds.push(purchaseId);
+                  totalCost += parseFloat(seat.price);
+                  completedPurchases++;
+
+                  // If this is the last seat, finalize the transaction
+                  if (completedPurchases === seats.length) {
+                    if (hasError) {
+                      db.run('ROLLBACK');
+                      return res.status(500).json({ message: 'Error purchasing tickets' });
+                    }
+
+                    // Update group status and assign seats to members
+                    db.run(
+                      'UPDATE group_purchases SET status = ?, actualTotalCost = ?, successfulPurchaseAt = datetime("now") WHERE id = ?',
+                      ['completed', totalCost, groupId],
+                      (err) => {
+                        if (err) {
+                          console.error('Error updating group:', err);
+                          db.run('ROLLBACK');
+                          return res.status(500).json({ message: 'Error finalizing group purchase' });
+                        }
+
+                        // Assign seats to group members (simplified - assign in order)
+                        let assignmentIndex = 0;
+
+                        // Assign first seat to leader
+                        if (seats[assignmentIndex]) {
+                          db.run(
+                            'UPDATE group_members SET seatAssignedId = ?, finalPrice = ? WHERE groupId = ? AND userId = ?',
+                            [seats[assignmentIndex].seatId, seats[assignmentIndex].price, groupId, userId],
+                            () => assignmentIndex++
+                          );
+                        }
+
+                        // Get group members and assign remaining seats
+                        db.all(
+                          'SELECT userId FROM group_members WHERE groupId = ? AND status = ? ORDER BY joinedAt ASC',
+                          [groupId, 'joined'],
+                          (err, members) => {
+                            if (err) {
+                              console.error('Error fetching members for seat assignment:', err);
+                            } else {
+                              members.forEach((member, memberIndex) => {
+                                const seatIndex = assignmentIndex + memberIndex;
+                                if (seats[seatIndex]) {
+                                  db.run(
+                                    'UPDATE group_members SET seatAssignedId = ?, finalPrice = ? WHERE groupId = ? AND userId = ?',
+                                    [seats[seatIndex].seatId, seats[seatIndex].price, groupId, member.userId]
+                                  );
+                                }
+                              });
+                            }
+
+                            db.run('COMMIT');
+                            res.json({
+                              message: 'Group tickets purchased successfully!',
+                              purchaseIds,
+                              totalCost,
+                              seatsAssigned: seats.length
+                            });
+                          }
+                        );
+                      }
+                    );
+                  }
+                }
+              );
+            });
+          });
+        }
+      );
     }
   );
 });
