@@ -24,6 +24,7 @@ const Navbar = () => {
             <>
               <Link to="/events" className="nav-link">Events</Link>
               <Link to="/purchase-history" className="nav-link">My Tickets</Link>
+              <Link to="/marketplace" className="nav-link">Marketplace</Link>
               <Link to="/friends" className="nav-link">Friends</Link>
               {isAdmin && (
                 <div className="admin-dropdown">

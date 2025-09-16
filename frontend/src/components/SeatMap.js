@@ -137,13 +137,17 @@ const SeatMap = () => {
   };
 
   const getSeatColor = (seat) => {
-    if (seat.isPurchased) return '#ff6b6b';
+    if (seat.isPurchased && !seat.isMarketplace) return '#ff6b6b';
+    if (seat.isMarketplace) return '#9c88ff';
     if (seat.isReserved && seat.reservedByUserId !== currentUser?.id) return '#ffa500';
     if (selectedSeats.find(s => s.id === seat.id)) return '#51cf66';
     return '#339af0';
   };
 
   const getSeatPrice = (seat) => {
+    if (seat.isMarketplace && seat.marketplacePrice) {
+      return parseFloat(seat.marketplacePrice).toFixed(2);
+    }
     return (seat.basePrice * seat.multiplier).toFixed(2);
   };
 
@@ -247,6 +251,10 @@ const SeatMap = () => {
             <div className="legend-item">
               <div className="legend-color reserved"></div>
               <span>Reserved</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color marketplace"></div>
+              <span>Marketplace</span>
             </div>
             <div className="legend-item">
               <div className="legend-color sold"></div>

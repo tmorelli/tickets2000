@@ -100,6 +100,9 @@
 .legend-color.reserved {
   background: #ffa500;
 }
+.legend-color.marketplace {
+  background: #9c88ff;
+}
 
 .legend-color.sold {
   background: #ff6b6b;

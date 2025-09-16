@@ -72,6 +72,36 @@ db.serialize(() => {
     FOREIGN KEY (eventId) REFERENCES events (id),
     FOREIGN KEY (seatId) REFERENCES seats (id)
   )`);
+
+  // Create seat_reservations table
+  db.run(`CREATE TABLE IF NOT EXISTS seat_reservations (
+    seatId TEXT NOT NULL,
+    userId TEXT NOT NULL,
+    eventId TEXT NOT NULL,
+    expiresAt DATETIME NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (seatId, eventId),
+    FOREIGN KEY (seatId) REFERENCES seats (id),
+    FOREIGN KEY (userId) REFERENCES users (id),
+    FOREIGN KEY (eventId) REFERENCES events (id)
+  )`);
+
+  // Create marketplace_listings table
+  db.run(`CREATE TABLE IF NOT EXISTS marketplace_listings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sellerId TEXT NOT NULL,
+    eventId TEXT NOT NULL,
+    seatId TEXT NOT NULL,
+    price DECIMAL(10,2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'available',
+    buyerId TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    soldAt DATETIME,
+    FOREIGN KEY (sellerId) REFERENCES users (id),
+    FOREIGN KEY (eventId) REFERENCES events (id),
+    FOREIGN KEY (seatId) REFERENCES seats (id),
+    FOREIGN KEY (buyerId) REFERENCES users (id)
+  )`);
 });
 
 // Middleware to verify JWT token
@@ -334,14 +364,19 @@ const cleanupExpiredReservations = () => {
 app.get('/api/events/:eventId/seats', (req, res) => {
   const eventId = req.params.eventId;
 
+  console.log('[SEATS] Fetching seats for event:', eventId);
+
   // Clean up expired reservations first
   cleanupExpiredReservations();
 
   // First get the venue for this event
   db.get('SELECT venueId FROM events WHERE id = ?', [eventId], (err, event) => {
     if (err || !event) {
+      console.error('[SEATS] Event not found or error:', err);
       return res.status(404).json({ message: 'Event not found' });
     }
+
+    console.log('[SEATS] Found event with venueId:', event.venueId);
 
     // Get all seats for this venue with purchase and reservation status
     const query = `
@@ -355,15 +390,22 @@ app.get('/api/events/:eventId/seats', (req, res) => {
           WHEN r.seatId IS NOT NULL AND r.expiresAt > datetime("now") THEN 1
           ELSE 0
         END as isReserved,
-        r.userId as reservedByUserId
+        r.userId as reservedByUserId,
+        CASE
+          WHEN ml.id IS NOT NULL AND ml.status = 'active' THEN 1
+          ELSE 0
+        END as isMarketplace,
+        ml.listPrice as marketplacePrice,
+        ml.sellerId as marketplaceSellerId
       FROM seats s
       LEFT JOIN purchases p ON s.id = p.seatId AND p.eventId = ?
       LEFT JOIN seat_reservations r ON s.id = r.seatId AND r.eventId = ? AND r.expiresAt > datetime("now")
+      LEFT JOIN marketplace_listings ml ON s.id = ml.seatId AND ml.eventId = ? AND ml.status = 'active'
       WHERE s.venueId = ?
       ORDER BY s.section, s.row, s.number
     `;
 
-    db.all(query, [eventId, eventId, event.venueId], (err, seats) => {
+    db.all(query, [eventId, eventId, eventId, event.venueId], (err, seats) => {
       if (err) {
         return res.status(500).json({ message: 'Error fetching seats' });
       }
@@ -388,8 +430,8 @@ app.post('/api/events/:eventId/seats/reserve', authenticateToken, (req, res) => 
   // Clean up expired reservations
   cleanupExpiredReservations();
 
-  // Set reservation expiry to 15 minutes from now
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  // Set reservation expiry to 15 minutes from now using SQLite datetime format
+  const expiresAt = `datetime('now', '+15 minutes')`;
 
   // First, remove existing reservations by this user for this event
   console.log(`[RESERVATION] Clearing existing reservations for user ${userId} on event ${eventId}`);
@@ -432,8 +474,8 @@ app.post('/api/events/:eventId/seats/reserve', authenticateToken, (req, res) => 
       const reservationPromises = seatIds.map(seatId => {
         return new Promise((resolve, reject) => {
           db.run(
-            'INSERT OR REPLACE INTO seat_reservations (seatId, userId, eventId, expiresAt) VALUES (?, ?, ?, ?)',
-            [seatId, userId, eventId, expiresAt],
+            `INSERT OR REPLACE INTO seat_reservations (seatId, userId, eventId, expiresAt) VALUES (?, ?, ?, ${expiresAt})`,
+            [seatId, userId, eventId],
             function(err) {
               if (err) reject(err);
               else resolve();
@@ -444,9 +486,12 @@ app.post('/api/events/:eventId/seats/reserve', authenticateToken, (req, res) => 
 
       Promise.all(reservationPromises)
         .then(() => {
+          console.log(`[RESERVATION] Successfully reserved ${seatIds.length} seats for user ${userId}`);
+          // Calculate the actual expiration time for the response
+          const actualExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
           res.json({
             message: 'Seats reserved successfully',
-            expiresAt,
+            expiresAt: actualExpiresAt,
             reservedSeats: seatIds
           });
         })
@@ -698,6 +743,205 @@ app.get('/api/purchases', authenticateToken, (req, res) => {
       return res.status(500).json({ message: 'Error fetching purchase history' });
     }
     res.json(purchases);
+  });
+});
+
+// Marketplace Routes
+app.post('/api/marketplace/listings', authenticateToken, (req, res) => {
+  const { eventId, seatId, price } = req.body;
+  const sellerId = req.user.userId;
+
+  console.log('[MARKETPLACE POST] Creating listing:', { eventId, seatId, price, sellerId });
+
+  // Verify the user owns this ticket
+  const checkQuery = `
+    SELECT * FROM purchases
+    WHERE userId = ? AND eventId = ? AND seatId = ?
+  `;
+
+  db.get(checkQuery, [sellerId, eventId, seatId], (err, purchase) => {
+    if (err) {
+      console.error('[MARKETPLACE POST] Database error checking purchase:', err);
+      return res.status(500).json({ message: 'Database error' });
+    }
+
+    if (!purchase) {
+      return res.status(403).json({ message: 'You do not own this ticket' });
+    }
+
+    console.log('[MARKETPLACE POST] Found purchase:', purchase);
+
+    // Check if already listed
+    const existingQuery = `
+      SELECT * FROM marketplace_listings
+      WHERE sellerId = ? AND eventId = ? AND seatId = ? AND status = 'active'
+    `;
+
+    db.get(existingQuery, [sellerId, eventId, seatId], (err, existing) => {
+      if (err) {
+        console.error('[MARKETPLACE POST] Database error checking existing listing:', err);
+        return res.status(500).json({ message: 'Database error' });
+      }
+
+      if (existing) {
+        console.log('[MARKETPLACE POST] Ticket already listed:', existing);
+        return res.status(400).json({ message: 'Ticket is already listed on marketplace' });
+      }
+
+      // Create marketplace listing
+      const insertQuery = `
+        INSERT INTO marketplace_listings (purchaseId, sellerId, eventId, seatId, listPrice, status, listedAt)
+        VALUES (?, ?, ?, ?, ?, 'active', datetime('now'))
+      `;
+
+      console.log('[MARKETPLACE POST] Inserting listing with params:', [purchase.id, sellerId, eventId, seatId, price]);
+
+      db.run(insertQuery, [purchase.id, sellerId, eventId, seatId, price], function(err) {
+        if (err) {
+          console.error('[MARKETPLACE POST] Database error creating listing:', err);
+          return res.status(500).json({ message: 'Error creating marketplace listing' });
+        }
+        console.log('[MARKETPLACE POST] Listing created successfully, ID:', this.lastID);
+        res.json({ message: 'Ticket listed on marketplace successfully', listingId: this.lastID });
+      });
+    });
+  });
+});
+
+app.get('/api/marketplace/listings', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+  console.log('[MARKETPLACE] Fetching listings for user:', userId);
+
+  const query = `
+    SELECT
+      ml.*,
+      ml.listPrice as price,
+      ml.listedAt as createdAt,
+      ml.soldAt,
+      CASE ml.status
+        WHEN 'active' THEN 'available'
+        WHEN 'sold' THEN 'sold'
+        WHEN 'removed' THEN 'removed'
+        ELSE ml.status
+      END as status,
+      e.title as eventTitle,
+      e.date as eventDate,
+      v.name as venueName,
+      v.address as venueAddress,
+      s.section, s.row, s.number
+    FROM marketplace_listings ml
+    JOIN events e ON ml.eventId = e.id
+    JOIN venues v ON e.venueId = v.id
+    JOIN seats s ON ml.seatId = s.id
+    WHERE ml.sellerId = ?
+    ORDER BY ml.listedAt DESC
+  `;
+
+  db.all(query, [userId], (err, listings) => {
+    if (err) {
+      console.error('[MARKETPLACE] Error fetching listings:', err);
+      return res.status(500).json({ message: 'Error fetching marketplace listings' });
+    }
+    console.log('[MARKETPLACE] Found', listings.length, 'listings');
+    res.json(listings);
+  });
+});
+
+app.delete('/api/marketplace/listings/:listingId', authenticateToken, (req, res) => {
+  const { listingId } = req.params;
+  const userId = req.user.userId;
+
+  // Check ownership and that it's not sold
+  const checkQuery = `
+    SELECT * FROM marketplace_listings
+    WHERE id = ? AND sellerId = ? AND status = 'active'
+  `;
+
+  db.get(checkQuery, [listingId, userId], (err, listing) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
+
+    if (!listing) {
+      return res.status(404).json({ message: 'Listing not found or already sold' });
+    }
+
+    const deleteQuery = `DELETE FROM marketplace_listings WHERE id = ?`;
+
+    db.run(deleteQuery, [listingId], (err) => {
+      if (err) {
+        return res.status(500).json({ message: 'Error removing listing' });
+      }
+      res.json({ message: 'Listing removed from marketplace' });
+    });
+  });
+});
+
+app.post('/api/marketplace/purchase/:listingId', authenticateToken, (req, res) => {
+  const { listingId } = req.params;
+  const { paymentInfo } = req.body;
+  const buyerId = req.user.userId;
+
+  // Validate payment info
+  if (!paymentInfo || !paymentInfo.cardholderName || !paymentInfo.cardNumber || !paymentInfo.cvv ||
+      !paymentInfo.billingAddress || !paymentInfo.billingCity || !paymentInfo.billingState || !paymentInfo.billingZip ||
+      !paymentInfo.expirationMonth || !paymentInfo.expirationYear) {
+    return res.status(400).json({ message: 'All payment information fields are required' });
+  }
+
+  // Get marketplace listing
+  const listingQuery = `
+    SELECT * FROM marketplace_listings
+    WHERE id = ? AND status = 'active'
+  `;
+
+  db.get(listingQuery, [listingId], (err, listing) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error' });
+    }
+
+    if (!listing) {
+      return res.status(404).json({ message: 'Listing not found or no longer available' });
+    }
+
+    if (listing.sellerId === buyerId) {
+      return res.status(400).json({ message: 'Cannot buy your own ticket' });
+    }
+
+    db.serialize(() => {
+      db.run('BEGIN TRANSACTION');
+
+      // Update original purchase to new buyer
+      const updatePurchaseQuery = `
+        UPDATE purchases
+        SET userId = ?
+        WHERE eventId = ? AND seatId = ? AND userId = ?
+      `;
+
+      db.run(updatePurchaseQuery, [buyerId, listing.eventId, listing.seatId, listing.sellerId], function(err) {
+        if (err) {
+          db.run('ROLLBACK');
+          return res.status(500).json({ message: 'Error transferring ticket' });
+        }
+
+        // Mark listing as sold
+        const updateListingQuery = `
+          UPDATE marketplace_listings
+          SET status = 'sold', buyerId = ?, soldAt = datetime('now')
+          WHERE id = ?
+        `;
+
+        db.run(updateListingQuery, [buyerId, listingId], function(err) {
+          if (err) {
+            db.run('ROLLBACK');
+            return res.status(500).json({ message: 'Error updating listing' });
+          }
+
+          db.run('COMMIT');
+          res.json({ message: 'Marketplace ticket purchased successfully!' });
+        });
+      });
+    });
   });
 });
 
@@ -995,13 +1239,15 @@ app.get('/api/friends', authenticateToken, (req, res) => {
         SELECT
           e.id, e.title, e.date, e.imageUrl,
           v.name as venueName,
-          s.section, s.row, s.number as seatNumber,
-          p.purchaseDate
+          MIN(s.section) as section, MIN(s.row) as row, MIN(s.number) as seatNumber,
+          MIN(p.purchaseDate) as purchaseDate,
+          COUNT(p.id) as ticketCount
         FROM purchases p
         JOIN events e ON p.eventId = e.id
         JOIN venues v ON e.venueId = v.id
         JOIN seats s ON p.seatId = s.id
         WHERE p.userId = ?
+        GROUP BY e.id, e.title, e.date, e.imageUrl, v.name
         ORDER BY e.date ASC
       `;
 

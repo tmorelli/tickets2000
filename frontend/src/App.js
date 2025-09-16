@@ -10,6 +10,7 @@ import PurchaseHistory from './components/PurchaseHistory';
 import AdminUsers from './components/AdminUsers';
 import AdminEvents from './components/AdminEvents';
 import Friends from './components/Friends';
+import Marketplace from './components/Marketplace';
 import './App.css';
 
 const ProtectedRoute = ({ children }) => {
@@ -104,6 +105,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Friends />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/marketplace"
+                element={
+                  <ProtectedRoute>
+                    <Marketplace />
                   </ProtectedRoute>
                 }
               />
