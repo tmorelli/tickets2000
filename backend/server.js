@@ -423,9 +423,31 @@ app.post('/api/purchase', authenticateToken, (req, res) => {
     return res.status(400).json({ message: 'At least one seat must be selected' });
   }
 
-  // Check if any seats are already purchased for this event
-  const seatCheckQuery = `SELECT seatId FROM purchases WHERE eventId = ? AND seatId IN (${seatsToProcess.map(() => '?').join(',')})`;
-  db.all(seatCheckQuery, [eventId, ...seatsToProcess], (err, existingPurchases) => {
+  // Check if tickets are on sale yet (server-side validation)
+  db.get('SELECT onSaleDate FROM events WHERE id = ?', [eventId], (err, event) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error checking event details' });
+    }
+
+    if (!event) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    if (event.onSaleDate) {
+      const onSaleDate = new Date(event.onSaleDate);
+      const now = new Date();
+
+      if (now < onSaleDate) {
+        return res.status(403).json({
+          message: 'Tickets are not yet available for sale',
+          onSaleDate: event.onSaleDate
+        });
+      }
+    }
+
+    // Check if any seats are already purchased for this event
+    const seatCheckQuery = `SELECT seatId FROM purchases WHERE eventId = ? AND seatId IN (${seatsToProcess.map(() => '?').join(',')})`;
+    db.all(seatCheckQuery, [eventId, ...seatsToProcess], (err, existingPurchases) => {
     if (err) {
       return res.status(500).json({ message: 'Error checking seat availability' });
     }
@@ -513,6 +535,7 @@ app.post('/api/purchase', authenticateToken, (req, res) => {
         savePaymentAndPurchase();
       }
     });
+  });
   });
 });
 
