@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { API_BASE_URL } from '../config/api';
 import CountdownTimer from './CountdownTimer';
 import './EventsList.css';
 
@@ -16,7 +17,7 @@ const EventsList = () => {
   useEffect(() => {
     const fetchEvents = async () => {
       try {
-        const response = await axios.get('http://localhost:3001/api/events', {
+        const response = await axios.get(`${API_BASE_URL}/events`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setEvents(response.data);

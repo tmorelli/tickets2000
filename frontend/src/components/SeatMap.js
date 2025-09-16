@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import PaymentForm from './PaymentForm';
+import { API_BASE_URL } from '../config/api';
 import './SeatMap.css';
 
 const SeatMap = () => {
@@ -22,8 +23,8 @@ const SeatMap = () => {
     const fetchEventAndSeats = async () => {
       try {
         const [eventResponse, seatsResponse] = await Promise.all([
-          axios.get(`http://localhost:3001/api/events/${eventId}`),
-          axios.get(`http://localhost:3001/api/events/${eventId}/seats`)
+          axios.get(`${API_BASE_URL}/events/${eventId}`),
+          axios.get(`${API_BASE_URL}/events/${eventId}/seats`)
         ]);
 
         setEvent(eventResponse.data);
@@ -40,19 +41,66 @@ const SeatMap = () => {
 
   const handleSeatClick = (seat) => {
     if (seat.isPurchased) return;
+    if (seat.isReserved && seat.reservedByUserId !== currentUser?.id) return;
 
     const isSelected = selectedSeats.find(s => s.id === seat.id);
+    let newSelectedSeats;
 
     if (isSelected) {
       // Remove seat from selection
-      setSelectedSeats(selectedSeats.filter(s => s.id !== seat.id));
+      newSelectedSeats = selectedSeats.filter(s => s.id !== seat.id);
+      setSelectedSeats(newSelectedSeats);
     } else {
       // Add seat to selection (max 8 seats)
       if (selectedSeats.length < 8) {
-        setSelectedSeats([...selectedSeats, seat]);
+        newSelectedSeats = [...selectedSeats, seat];
+        setSelectedSeats(newSelectedSeats);
       } else {
         alert('You can select a maximum of 8 seats');
+        return;
       }
+    }
+
+    // Make reservation API call
+    if (newSelectedSeats.length > 0) {
+      const seatIds = newSelectedSeats.map(s => s.id);
+      reserveSeats(seatIds);
+    } else {
+      // Release reservations if no seats selected
+      releaseReservations();
+    }
+  };
+
+  const reserveSeats = async (seatIds) => {
+    try {
+      await axios.post(`${API_BASE_URL}/events/${eventId}/seats/reserve`, {
+        seatIds
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch (error) {
+      console.error('Error reserving seats:', error);
+      if (error.response?.status === 409) {
+        // Some seats are not available, refresh the seat map
+        const [eventResponse, seatsResponse] = await Promise.all([
+          axios.get(`${API_BASE_URL}/events/${eventId}`),
+          axios.get(`${API_BASE_URL}/events/${eventId}/seats`)
+        ]);
+        setEvent(eventResponse.data);
+        setSeats(seatsResponse.data);
+        setSelectedSeats([]);
+        alert('Some selected seats are no longer available. Please select different seats.');
+      }
+    }
+  };
+
+  const releaseReservations = async () => {
+    try {
+      await axios.delete(`${API_BASE_URL}/events/${eventId}/seats/reserve`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch (error) {
+      console.error('Error releasing reservations:', error);
     }
   };
 
@@ -66,7 +114,7 @@ const SeatMap = () => {
     try {
       const seatIds = selectedSeats.map(seat => seat.id);
 
-      const response = await axios.post('http://localhost:3001/api/purchase', {
+      const response = await axios.post('${API_BASE_URL}/purchase', {
         eventId,
         seatIds,
         paymentInfo
@@ -90,6 +138,7 @@ const SeatMap = () => {
 
   const getSeatColor = (seat) => {
     if (seat.isPurchased) return '#ff6b6b';
+    if (seat.isReserved && seat.reservedByUserId !== currentUser?.id) return '#ffa500';
     if (selectedSeats.find(s => s.id === seat.id)) return '#51cf66';
     return '#339af0';
   };
@@ -194,6 +243,10 @@ const SeatMap = () => {
             <div className="legend-item">
               <div className="legend-color selected"></div>
               <span>Selected</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color reserved"></div>
+              <span>Reserved</span>
             </div>
             <div className="legend-item">
               <div className="legend-color sold"></div>

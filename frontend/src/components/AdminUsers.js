@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { API_BASE_URL } from '../config/api';
 import './AdminUsers.css';
 
 const AdminUsers = () => {
@@ -20,7 +21,7 @@ const AdminUsers = () => {
 
   const fetchUsers = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/admin/users', {
+      const response = await axios.get(`${API_BASE_URL}/admin/users`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUsers(response.data);
@@ -34,7 +35,7 @@ const AdminUsers = () => {
   const toggleAdminStatus = async (userId, currentAdminStatus) => {
     try {
       await axios.put(
-        `http://localhost:3001/api/admin/users/${userId}/admin`,
+        `${API_BASE_URL}/admin/users/${userId}/admin`,
         { isAdmin: !currentAdminStatus },
         { headers: { Authorization: `Bearer ${token}` } }
       );

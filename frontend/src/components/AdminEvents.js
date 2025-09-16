@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { API_BASE_URL } from '../config/api';
 import './AdminEvents.css';
 
 const AdminEvents = () => {
@@ -32,7 +33,7 @@ const AdminEvents = () => {
 
   const fetchEvents = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/admin/events', {
+      const response = await axios.get(`${API_BASE_URL}/admin/events`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setEvents(response.data);
@@ -45,7 +46,7 @@ const AdminEvents = () => {
 
   const fetchVenues = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/venues');
+      const response = await axios.get(`${API_BASE_URL}/venues`);
       setVenues(response.data);
     } catch (error) {
       console.error('Failed to fetch venues');
@@ -66,13 +67,13 @@ const AdminEvents = () => {
     try {
       if (editingEvent) {
         await axios.put(
-          `http://localhost:3001/api/admin/events/${editingEvent.id}`,
+          `${API_BASE_URL}/admin/events/${editingEvent.id}`,
           formData,
           { headers: { Authorization: `Bearer ${token}` } }
         );
       } else {
         await axios.post(
-          'http://localhost:3001/api/admin/events',
+          `${API_BASE_URL}/admin/events`,
           formData,
           { headers: { Authorization: `Bearer ${token}` } }
         );
@@ -106,7 +107,7 @@ const AdminEvents = () => {
 
     try {
       await axios.delete(
-        `http://localhost:3001/api/admin/events/${eventId}`,
+        `${API_BASE_URL}/admin/events/${eventId}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       await fetchEvents();

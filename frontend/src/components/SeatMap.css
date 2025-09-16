@@ -97,6 +97,10 @@
   background: #51cf66;
 }
 
+.legend-color.reserved {
+  background: #ffa500;
+}
+
 .legend-color.sold {
   background: #ff6b6b;
 }

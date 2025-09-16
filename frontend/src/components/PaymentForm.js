@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { API_BASE_URL } from '../config/api';
 import './PaymentForm.css';
 
 const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [] }) => {
@@ -30,7 +31,7 @@ const PaymentForm = ({ onSubmit, onCancel, totalPrice, selectedSeats = [] }) => 
 
   const fetchPaymentMethods = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/payment-methods', {
+      const response = await axios.get(`${API_BASE_URL}/payment-methods`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setPaymentMethods(response.data);

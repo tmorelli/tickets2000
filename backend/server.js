@@ -322,8 +322,20 @@ app.get('/api/events/:id', (req, res) => {
 });
 
 // Seats Routes
+// Clean up expired reservations
+const cleanupExpiredReservations = () => {
+  db.run('DELETE FROM seat_reservations WHERE expiresAt < datetime("now")', (err) => {
+    if (err) {
+      console.error('Error cleaning up expired reservations:', err);
+    }
+  });
+};
+
 app.get('/api/events/:eventId/seats', (req, res) => {
   const eventId = req.params.eventId;
+
+  // Clean up expired reservations first
+  cleanupExpiredReservations();
 
   // First get the venue for this event
   db.get('SELECT venueId FROM events WHERE id = ?', [eventId], (err, event) => {
@@ -331,26 +343,129 @@ app.get('/api/events/:eventId/seats', (req, res) => {
       return res.status(404).json({ message: 'Event not found' });
     }
 
-    // Get all seats for this venue with purchase status
+    // Get all seats for this venue with purchase and reservation status
     const query = `
       SELECT
         s.*,
         CASE
           WHEN p.id IS NOT NULL THEN 1
           ELSE 0
-        END as isPurchased
+        END as isPurchased,
+        CASE
+          WHEN r.seatId IS NOT NULL AND r.expiresAt > datetime("now") THEN 1
+          ELSE 0
+        END as isReserved,
+        r.userId as reservedByUserId
       FROM seats s
       LEFT JOIN purchases p ON s.id = p.seatId AND p.eventId = ?
+      LEFT JOIN seat_reservations r ON s.id = r.seatId AND r.eventId = ? AND r.expiresAt > datetime("now")
       WHERE s.venueId = ?
       ORDER BY s.section, s.row, s.number
     `;
 
-    db.all(query, [eventId, event.venueId], (err, seats) => {
+    db.all(query, [eventId, eventId, event.venueId], (err, seats) => {
       if (err) {
         return res.status(500).json({ message: 'Error fetching seats' });
       }
       res.json(seats);
     });
+  });
+});
+
+// Seat Reservations Routes
+app.post('/api/events/:eventId/seats/reserve', authenticateToken, (req, res) => {
+  const { eventId } = req.params;
+  const { seatIds } = req.body;
+  const userId = req.user.userId;
+
+  console.log(`[RESERVATION] User ${userId} attempting to reserve seats ${seatIds.join(', ')} for event ${eventId}`);
+
+  if (!seatIds || !Array.isArray(seatIds) || seatIds.length === 0) {
+    console.log('[RESERVATION] Error: Missing or invalid seat IDs');
+    return res.status(400).json({ message: 'Seat IDs are required' });
+  }
+
+  // Clean up expired reservations
+  cleanupExpiredReservations();
+
+  // Set reservation expiry to 15 minutes from now
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+  // First, remove existing reservations by this user for this event
+  console.log(`[RESERVATION] Clearing existing reservations for user ${userId} on event ${eventId}`);
+  db.run('DELETE FROM seat_reservations WHERE userId = ? AND eventId = ?', [userId, eventId], (err) => {
+    if (err) {
+      console.log('[RESERVATION] Error clearing existing reservations:', err);
+      return res.status(500).json({ message: 'Error clearing existing reservations' });
+    }
+
+    // Now check if seats are available (not purchased or reserved by others)
+    const checkQuery = `
+      SELECT s.id
+      FROM seats s
+      LEFT JOIN purchases p ON s.id = p.seatId AND p.eventId = ?
+      LEFT JOIN seat_reservations r ON s.id = r.seatId AND r.eventId = ? AND r.expiresAt > datetime("now")
+      WHERE s.id IN (${seatIds.map(() => '?').join(',')})
+      AND (p.id IS NOT NULL OR r.seatId IS NOT NULL)
+    `;
+
+    db.all(checkQuery, [eventId, eventId, ...seatIds], (err, unavailableSeats) => {
+      if (err) {
+        console.log('[RESERVATION] Error checking seat availability:', err);
+        return res.status(500).json({ message: 'Error checking seat availability' });
+      }
+
+      if (unavailableSeats.length > 0) {
+        console.log(`[RESERVATION] ${unavailableSeats.length} seats unavailable:`, unavailableSeats.map(s => s.id));
+        return res.status(409).json({
+          message: 'Some seats are not available',
+          unavailableSeats: unavailableSeats.map(s => s.id)
+        });
+      }
+
+      // Create new reservations for all selected seats
+      if (err) {
+        return res.status(500).json({ message: 'Error clearing existing reservations' });
+      }
+
+      // Create new reservations
+      const reservationPromises = seatIds.map(seatId => {
+        return new Promise((resolve, reject) => {
+          db.run(
+            'INSERT OR REPLACE INTO seat_reservations (seatId, userId, eventId, expiresAt) VALUES (?, ?, ?, ?)',
+            [seatId, userId, eventId, expiresAt],
+            function(err) {
+              if (err) reject(err);
+              else resolve();
+            }
+          );
+        });
+      });
+
+      Promise.all(reservationPromises)
+        .then(() => {
+          res.json({
+            message: 'Seats reserved successfully',
+            expiresAt,
+            reservedSeats: seatIds
+          });
+        })
+        .catch(err => {
+          res.status(500).json({ message: 'Error creating reservations' });
+        });
+    });
+  });
+});
+
+app.delete('/api/events/:eventId/seats/reserve', authenticateToken, (req, res) => {
+  const { eventId } = req.params;
+  const userId = req.user.userId;
+
+  db.run('DELETE FROM seat_reservations WHERE userId = ? AND eventId = ?', [userId, eventId], (err) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error releasing reservations' });
+    }
+    res.json({ message: 'Reservations released successfully' });
   });
 });
 
@@ -445,18 +560,29 @@ app.post('/api/purchase', authenticateToken, (req, res) => {
       }
     }
 
-    // Check if any seats are already purchased for this event
-    const seatCheckQuery = `SELECT seatId FROM purchases WHERE eventId = ? AND seatId IN (${seatsToProcess.map(() => '?').join(',')})`;
-    db.all(seatCheckQuery, [eventId, ...seatsToProcess], (err, existingPurchases) => {
+    // Clean up expired reservations
+    cleanupExpiredReservations();
+
+    // Check if any seats are already purchased or reserved by others
+    const seatCheckQuery = `
+      SELECT s.id as seatId,
+             CASE WHEN p.id IS NOT NULL THEN 'purchased' ELSE 'reserved_by_other' END as status
+      FROM seats s
+      LEFT JOIN purchases p ON s.id = p.seatId AND p.eventId = ?
+      LEFT JOIN seat_reservations r ON s.id = r.seatId AND r.eventId = ? AND r.expiresAt > datetime("now") AND r.userId != ?
+      WHERE s.id IN (${seatsToProcess.map(() => '?').join(',')})
+      AND (p.id IS NOT NULL OR r.seatId IS NOT NULL)
+    `;
+
+    db.all(seatCheckQuery, [eventId, eventId, userId, ...seatsToProcess], (err, unavailableSeats) => {
     if (err) {
       return res.status(500).json({ message: 'Error checking seat availability' });
     }
 
-    if (existingPurchases.length > 0) {
-      const unavailableSeats = existingPurchases.map(p => p.seatId);
+    if (unavailableSeats.length > 0) {
       return res.status(409).json({
-        message: 'Some seats are already purchased',
-        unavailableSeats
+        message: 'Some seats are not available',
+        unavailableSeats: unavailableSeats.map(s => ({ seatId: s.seatId, status: s.status }))
       });
     }
 
@@ -501,6 +627,13 @@ app.post('/api/purchase', authenticateToken, (req, res) => {
 
         Promise.all(purchasePromises)
           .then(purchases => {
+            // Clear user's reservations for this event after successful purchase
+            db.run('DELETE FROM seat_reservations WHERE userId = ? AND eventId = ?', [userId, eventId], (err) => {
+              if (err) {
+                console.error('Error clearing reservations after purchase:', err);
+              }
+            });
+
             res.status(201).json({
               purchases,
               eventId,

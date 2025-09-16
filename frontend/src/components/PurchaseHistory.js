@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { API_BASE_URL } from '../config/api';
 import './PurchaseHistory.css';
 
 const PurchaseHistory = () => {
@@ -17,7 +18,7 @@ const PurchaseHistory = () => {
       }
 
       try {
-        const response = await axios.get('http://localhost:3001/api/purchases');
+        const response = await axios.get(`${API_BASE_URL}/purchases`);
         setPurchases(response.data);
       } catch (error) {
         setError('Error loading purchase history');

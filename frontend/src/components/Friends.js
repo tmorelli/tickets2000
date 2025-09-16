@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
+import { API_BASE_URL } from '../config/api';
 import './Friends.css';
 
 const Friends = () => {
@@ -20,7 +21,7 @@ const Friends = () => {
 
   const fetchFriends = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/friends', {
+      const response = await axios.get(`${API_BASE_URL}/friends`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setFriends(response.data);
@@ -31,7 +32,7 @@ const Friends = () => {
 
   const fetchFriendRequests = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/api/friends/requests', {
+      const response = await axios.get(`${API_BASE_URL}/friends/requests`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setFriendRequests(response.data);
@@ -48,7 +49,7 @@ const Friends = () => {
 
     setLoading(true);
     try {
-      const response = await axios.get(`http://localhost:3001/api/users/search?query=${encodeURIComponent(query)}`, {
+      const response = await axios.get(`${API_BASE_URL}/users/search?query=${encodeURIComponent(query)}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setSearchResults(response.data);
@@ -61,7 +62,7 @@ const Friends = () => {
 
   const sendFriendRequest = async (recipientId) => {
     try {
-      await axios.post('http://localhost:3001/api/friends/request',
+      await axios.post(`${API_BASE_URL}/friends/request`,
         { recipientId },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -76,7 +77,7 @@ const Friends = () => {
 
   const respondToRequest = async (requestId, action) => {
     try {
-      await axios.put(`http://localhost:3001/api/friends/request/${requestId}`,
+      await axios.put(`${API_BASE_URL}/friends/request/${requestId}`,
         { action },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -98,7 +99,7 @@ const Friends = () => {
     }
 
     try {
-      await axios.delete(`http://localhost:3001/api/friends/${friendId}`, {
+      await axios.delete(`${API_BASE_URL}/friends/${friendId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
